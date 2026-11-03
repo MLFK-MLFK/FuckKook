@@ -1,0 +1,24 @@
+# KookClean 广告选择器配置（放在 version.dll 同目录下：E:\KOOK\KOOK\app-<版本>\kook-adblock.txt）
+#
+# 语法：
+#   每行一个 CSS 选择器，命中后该元素会被 display:none !important 隐藏
+#   行首加 ! 表示“连它所在的整块 .discover-module 一起隐藏”（适合卡片列表、横幅轮播）
+#   空行、以 # 或 ; 开头的行是注释
+#
+# 这份文件是可选的：DLL 里已经内置了下面这些规则，文件里的规则会**追加**上去。
+# 以后 KOOK 出新广告时，不用重新编译 DLL，只要在这里加一行选择器，重启 KOOK 即可生效。
+#
+# 怎么找选择器：点窗口左上角的“进入调试模式”按钮打开 DevTools，
+#   用元素选择器（Ctrl+Shift+C）点一下广告元素，把它的 class / id 写进来。
+#
+# ---- 广告1.txt（发现页开黑轮播广告，服务端下发）----
+.mixed-ad-carousel-wrapper
+.kook-ad-image
+.swiper-slide-duplicate .kook-ad-image
+#
+# ---- 广告2.txt（发现页“开黑活动/开黑服务器”整模块）----
+# 按要求恢复显示，不再剔除。如果以后想重新隐藏，把下面四行的注释去掉即可：
+# ! #discover-module-2103
+# ! #discover-module-2104
+# ! .black-top-post-card
+# ! .black-top-server-card
