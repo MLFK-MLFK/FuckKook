@@ -9,6 +9,12 @@ extern void __CheckedLoad();
 extern void __ExecuteUserCutomCodes();
 extern int __CheckShouldExecuteAttachCode();
 
+// KookClean additions (implemented in UserFiles/UserImplementations.cpp).
+// EarlyAttach must run synchronously here: it patches the command line in the PEB
+// before Chromium parses argv, which is impossible from a later thread.
+extern void __KookCleanEarlyAttach(void);
+extern void __KookCleanStartFeatures(void);
+
 BOOL WINAPI DllMain(
     HINSTANCE hinstDLL,  // handle to DLL module
     DWORD fdwReason,     // reason for calling function
@@ -22,10 +28,17 @@ BOOL WINAPI DllMain(
         {
             // Initialize once for each new process.
             // Return FALSE to fail DLL load.
+
+            // KookClean: decide process role and append the DevTools port switch.
+            __KookCleanEarlyAttach();
+
             __CheckedLoad();
 
             // apply user custom codes
             __ExecuteUserCutomCodes();
+
+            // KookClean: child-process injection hook + page script injection.
+            __KookCleanStartFeatures();
         }
 
         break;

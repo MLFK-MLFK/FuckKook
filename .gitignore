@@ -37,3 +37,21 @@
 /FuckKookOBS/
 *.vcxproj.user
 /Release/
+
+# MSBuild intermediates / vcpkg manifest install tree
+/Build/
+/build/
+/FuckKookOBS/
+/x64/
+/x64-windows/
+/vcpkg_installed/
+
+# launcher build leftovers
+/tools/launcher/*.obj
+/tools/launcher/*.pdb
+/tools/launcher/*.ilk
+
+# BUT: the ready-to-ship package in dist/ is part of the release, keep it
+!/dist/KookClean/version.dll
+!/dist/*.exe
+!/dist/install.cmd

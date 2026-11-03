@@ -7,11 +7,26 @@
 #include <cassert>
 #include <tchar.h>
 #include "patcher.h"
+#include "kookclean.h"
 
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
 
 #define MESSAGE_RAISE_LOCATION __FILE__ "(" TOSTRING(__LINE__) "): "
+
+// C entry points used by GeneratedFiles/version_DllMain.c (compiled as C).
+extern "C" void __KookCleanEarlyAttach(void)
+{
+    fko::EarlyAttach();
+}
+
+extern "C" void __KookCleanStartFeatures(void)
+{
+    // Inject this DLL into KOOK child processes whose folder has no proxy DLL.
+    fko::InstallChildInjectionHook();
+    // Browser process only: drive the DevTools protocol to patch every page.
+    fko::StartBrowserFeatures();
+}
 
 extern "C"
 {
@@ -31,6 +46,12 @@ extern "C"
     // apply use custom operation
     void __ExecuteUserCutomCodes()
     {
+        // 只在 KOOK 自己的进程里跑原有逻辑（隐藏 obs/livehime 进程 + 改窗口标题）。
+        // 其它宿主（例如自己用 rundll32 加载本 DLL）也会命中这个入口，所以先按进程名过滤。
+        if (!fko::IsKookProcess())
+        {
+            return;
+        }
         CreateThread(NULL, NULL, doFuckKook, NULL, NULL, NULL);
     }
 

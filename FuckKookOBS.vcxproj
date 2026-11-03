@@ -33,10 +33,15 @@
     <ClCompile Include="GeneratedFiles/version.c" />
     <ClCompile Include="UserFiles/UserImplementations.cpp" />
     <ClCompile Include="UserFiles\easteregg.cpp" />
+    <ClCompile Include="UserFiles\kookclean_browser.cpp" />
+    <ClCompile Include="UserFiles\kookclean_common.cpp" />
+    <ClCompile Include="UserFiles\kookclean_inject.cpp" />
     <ClCompile Include="UserFiles\patcher.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="UserFiles\easteregg.h" />
+    <ClInclude Include="UserFiles\kookclean.h" />
+    <ClInclude Include="UserFiles\kookclean_payload.h" />
     <ClInclude Include="UserFiles\patcher.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
@@ -116,7 +121,8 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;WINMM_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <AdditionalIncludeDirectories>Utils/;GeneratedFiles/;Resources/;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Utils/;GeneratedFiles/;Resources/;UserFiles/;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -134,7 +140,8 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;WINMM_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <AdditionalIncludeDirectories>Utils/;GeneratedFiles/;Resources/;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Utils/;GeneratedFiles/;Resources/;UserFiles/;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -152,7 +159,8 @@
       <PreprocessorDefinitions>_DEBUG;WINMM_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <AdditionalIncludeDirectories>Utils/;GeneratedFiles/;Resources/;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Utils/;GeneratedFiles/;Resources/;UserFiles/;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -170,7 +178,8 @@
       <PreprocessorDefinitions>NDEBUG;WINMM_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <AdditionalIncludeDirectories>Utils/;GeneratedFiles/;Resources/;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Utils/;GeneratedFiles/;Resources/;UserFiles/;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

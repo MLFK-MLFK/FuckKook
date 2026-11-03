@@ -1,4 +1,4 @@
-﻿#include "patcher.h"
+#include "patcher.h"
 #include "easteregg.h"
 #include <string>
 #include <detours/detours.h>
@@ -74,6 +74,6 @@ DWORD WINAPI doFuckKook(LPVOID parameter) {
     showRollingEasterEgg(kookHwnd);
 
     // As a signature of successfully injected
-    SetWindowText(kookHwnd, L"KOOK | 语音已解锁");
+    SetWindowText(kookHwnd, L"KOOK | Hook已加载");
     return 0;
 }
