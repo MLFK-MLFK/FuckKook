@@ -75,5 +75,19 @@ DWORD WINAPI doFuckKook(LPVOID parameter) {
 
     // As a signature of successfully injected
     SetWindowText(kookHwnd, L"KOOK | Hook已加载");
+
+    // The renderer resets the window title to bare "KOOK" whenever it navigates,
+    // so keep re-applying our title while the window is alive.
+    while (IsWindow(kookHwnd)) {
+        Sleep(2000);
+
+        wchar_t title[128] = {0};
+        if (GetWindowTextW(kookHwnd, title, 128) <= 0)
+            continue;
+
+        if (lstrcmpW(title, L"KOOK") == 0)
+            SetWindowTextW(kookHwnd, L"KOOK | Hook已加载");
+    }
+
     return 0;
 }

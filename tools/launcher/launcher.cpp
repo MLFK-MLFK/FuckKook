@@ -1,8 +1,8 @@
 // KOOK 启动器（KookClean）
 //
 // 作用：双击本 exe 时
-//   1. 把同目录 KookClean\ 里的 version.dll 与 kook-adblock.txt 复制进每一个
-//      app-<版本>\ 目录（只认里面已经有 KOOK.exe 的目录，避免写进解压到一半的目录）；
+//   1. 把同目录 KookClean\ 里的 version.dll、kook-adblock.txt
+//      复制进每一个 app-<版本>\ 目录（只认里面已经有 KOOK.exe 的目录，避免写进解压到一半的目录）；
 //   2. 然后启动同目录的官方 KOOK.exe（Squirrel 启动器），命令行参数原样透传。
 //
 // 编译：tools\build-launcher.cmd（MSVC x64，/utf-8）

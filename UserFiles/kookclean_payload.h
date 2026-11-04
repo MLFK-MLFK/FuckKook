@@ -2,15 +2,26 @@
 // Source: UserFiles/payload.js
 #pragma once
 
-static const char kPayloadTemplate[] = R"FKOJS(/*
+#include <string>
+
+static const char* const kPayloadChunks[] = {
+R"FKOJS(/*
  * FuckKookObs + KookClean 注入脚本
  *
  * 由 DLL（浏览器进程中的 CDP 客户端）通过
  *   Page.addScriptToEvaluateOnNewDocument + Runtime.evaluate
  * 注入到 KOOK 的每一个文档（含 iframe）里，负责：
  *   1. 广告/推广元素剔除（规则来自 DLL：内置默认值 + 同目录 kook-adblock.txt）
- *   2. 左上角“进入调试模式”小按钮；单击时调用 DLL 注册的 binding，
- *      由 DLL 切换 KOOK 内置 DevTools（Ctrl+Alt+Shift+0，右侧停靠）
+ *   2. 左上角一个黑色小按钮，点开是菜单：
+ *        - 进入调试模式（调用 DLL 注册的 binding，由 DLL 切换 KOOK 内置 DevTools）
+ *        - 伪造状态 / 选择收录的游戏 / 正在听歌 / 清除
+ *   3. 临时伪造“正在玩 XXX”与“正在听 XXX”状态（只在本次登录里有效）：
+ *        - 启动时不读任何配置、不设置任何状态；只有你在菜单里点了才生效。
+ *        - 游戏：在账号里维护一条 process_name = kookplay 的自定义游戏条目，
+ *          把名字改成想要的文字，再 PATCH /api/v2/games/activity/<id>，
+ *          服务端就会把这条活动广播出去。
+ *        - 音乐：直接 POST /api/v2/games/music-activity {software, singer, music_name}。
+ *        - 关窗/刷新时（pagehide）自动把状态收回，下次启动就是干净的默认状态。
  *
  * 注意：本文件被 tools/gen-payload-header.ps1 嵌入 UserFiles/kookclean_payload.h，
  *       修改后需要重新生成头文件再编译。
@@ -25,10 +36,17 @@ static const char kPayloadTemplate[] = R"FKOJS(/*
   // m = 1 表示把命中元素所在的“发现页模块”（.discover-module）整块隐藏
   var RULES = __FKO_RULES__;
 
+  // 伪造状态是“临时”的：启动时不读任何配置、不设置任何状态，只在你从菜单里点了之后
+  // 才设置，并把“是我们设的”记在 statusState.owned 里；关掉窗口时尽力收回，
+  // 这样下次启动就是干净的“什么都没处理”的状态。
+  var STATUS_PROC = 'kookplay';      // 自定义游戏条目用的伪进程名（固定，便于复用同一条目）
+  var STATUS_INTERVAL = 20000;       // 每 20 秒重申一次，防止被 KOOK 自己的检测覆盖
+
   var HIDDEN_ATTR = 'data-fko-hidden';
   var MODULE_SEL = '.discover-module';
   var MODULE_FALLBACK_SEL = '[class*="discover-module"]';
   var BTN_ID = 'fko-debug-btn';
+  var STYLE_ID = 'fko-style';
   var scheduling = false;
 
   function hideElement(el) {
@@ -81,56 +99,507 @@ static const char kPayloadTemplate[] = R"FKOJS(/*
     } catch (e) { /* ignore */ }
   }
 
-  function buttonCss() {    return [
-      'position:fixed', 'left:1px', 'top:1px', 'z-index:2147483647',
-      'height:14px', 'line-height:14px', 'padding:0 4px', 'margin:0',
-      'font:10px/14px "Microsoft YaHei",system-ui,sans-serif',
-      'color:#ff4d4d', 'background:rgba(10,10,10,0.35)',
-      'border:1px solid rgba(255,59,59,0.35)', 'border-radius:2px',
-      'opacity:0.45', 'cursor:pointer', 'white-space:nowrap', 'overflow:hidden',
-      'user-select:none', '-webkit-user-select:none', '-webkit-app-region:no-drag',
-      'transition:opacity .12s linear,background .12s linear,border-color .12s linear'
-    ].join(';');
+  // ---------------------------------------------------------------- 状态控制
+
+  var CTRL = {
+    desiredName: '',                  // 期望显示的游戏动态名（空 = 不伪造）
+    desiredMusic: null,               // {name, singer, software}
+    musicSoftware: 'qqmusic',
+    games: null,
+    gamesAt: 0,
+    musicAt: 0,
+    busyMusic: false
+  };
+
+  var statusState = { id: 0, busy: false, lastApply: 0, lastError: '', lastName: '', owned: false };
+
+  function hostRequest() {
+    try {
+      var stub = window.__hostStub;
+      if (stub && stub.request && typeof stub.request.get === 'function') {
+        return stub.request;
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
   }
 
-  function installButton() {
-    if (!document.body) { return; }
-    if (document.getElementById(BTN_ID)) { return; }
+  function dataOf(res) {
+    if (Array.isArray(res)) { return res; }
+    if (res && Array.isArray(res.data)) { return res.data; }
+    return [];
+  }
 
-    var btn = document.createElement('div');
-    btn.id = BTN_ID;
-    btn.textContent = '进入调试模式';
-    btn.title = '单击切换 DevTools（右侧停靠）';
-    btn.style.cssText = buttonCss();
+  function findOwnGame(list) {
+    if (!list || !list.length) { return null; }
+    for (var i = 0; i < list.length; i++) {
+      var game = list[i];
+      if (!game || game.type !== 1) { continue; }
+      var names = game.process_name || [];
+      if (typeof names === 'string') { names = [names]; }
+      for (var k = 0; k < names.length; k++) {
+        var proc = String(names[k] || '').toLowerCase().replace('.exe', '');
+        if (proc === STATUS_PROC) { return game; }
+      }
+    }
+    return null;
+  }
 
-    btn.addEventListener('mouseenter', function () {
-      btn.style.opacity = '1';
-      btn.style.background = 'rgba(13,13,13,0.95)';
-      btn.style.borderColor = '#ff3b3b';
-    });
-    btn.addEventListener('mouseleave', function () {
-      btn.style.opacity = '0.45';
-      btn.style.background = 'rgba(10,10,10,0.35)';
-      btn.style.borderColor = 'rgba(255,59,59,0.35)';
-    });
-    btn.addEventListener('click', function (ev) {
-      if (ev) {
+  // 把“正在玩”设成 name；不带参数时用当前期望值（定时重申走这条路）
+  function applyStatus(name) {
+    if (typeof name === 'string' && name) { CTRL.desiredName = name; }
+    var target = CTRL.desiredName;
+    if (!target) { return Promise.resolve(false); }
+    if (window.top !== window) { return Promise.resolve(false); }  // 只在顶层文档里做
+    var request = hostRequest();
+    if (!request) { return Promise.resolve(false); }
+    if (statusState.busy) { return Promise.resolve(false); }
+    statusState.busy = true;
+
+    return Promise.resolve()
+      .then(function () { return request.get('/api/v2/games'); })
+      .then(function (res) {
+        var list = dataOf(res);
+        var mine = findOwnGame(list);
+        statusState.id = mine ? mine.id : 0;
+        if (mine && mine.name === target) { return mine.id; }
+        var body = {
+          name: target,
+          // 注意：服务端这里的 process_name 收的是字符串（存进去以后自己会变成数组），
+          // 传数组会被写成一堆奇怪的东西，实测必须传字符串。
+          process_name: STATUS_PROC,
+          runningProcessName: STATUS_PROC,
+          gm_code: '',
+          booster_game_id: '',
+          start_time: Math.round(Date.now() / 1000)
+        };
+        if (mine) { body.id = mine.id; }
+        return Promise.resolve(request.post('/api/v2/games', body)).then(function (r) {
+          var created = (r && r.id) ? r : ((r && r.data) || {});
+          return created.id || (mine && mine.id) || 0;
+        });
+      })
+      .then(function (id) {
+        statusState.id = id || 0;
+        if (!id) { return null; }
+        return Promise.resolve(request.patch('/api/v2/games/activity/' + id, {})).then(function () {
+          statusState.lastApply = Date.now();
+          statusState.lastName = target;
+          // 记下“当前活动是我们设的”，关窗时可以精确收回
+          statusState.owned = true;
+          try { renderRoot(); } catch (e) { /* ignore */ }
+        });
+      })
+      .catch(function (e) {
+        statusState.lastError = String(e && (e.message || e));
+      })
+      .then(function () { statusState.busy = false; return true; });
+  }
+
+  // 把“正在听”设成 name/singer；不带参数时用当前期望值
+  function applyMusic(name, singer, software) {
+    if (typeof name === 'string') {
+      if (!name) {
+        CTRL.desiredMusic = null;
+      } else {
+        CTRL.desiredMusic = {
+          name: name,
+          singer: String(singer || ''),
+          software: String(software || CTRL.musicSoftware || 'qqmusic')
+        };
+      }
+    }
+    var m = CTRL.desiredMusic;
+    if (!m) { return Promise.resolve(false); }
+    if (window.top !== window) { return Promise.resolve(false); }
+    var request = hostRequest();
+    if (!request) { return Promise.resolve(false); }
+    if (CTRL.busyMusic) { return Promise.resolve(false); }
+    CTRL.busyMusic = true;
+    var body = { software: m.software, singer: m.singer, music_name: m.name };
+    CTRL.musicAt = Date.now();
+    return Promise.resolve(request.post('/api/v2/games/music-activity', body))
+      .catch(function (e) { statusState.lastError = String(e && (e.message || e)); })
+      .then(function () { CTRL.busyMusic = false; try { renderRoot(); } catch (e) { /* ignore */ } return true; });
+  }
+
+  function clearStatus() {
+    var request = hostRequest();
+    if (!request) { return Promise.resolve(false); }
+    try {
+      return Promise.resolve(request.patch('/api/v2/games/activity/0', {})).catch(function () { return false; });
+    } catch (e) { return Promise.resolve(false); }
+  }
+
+  function stopAll() {
+    CTRL.desiredName = '';
+    CTRL.desiredMusic = null;
+    statusState.lastName = '';
+    statusState.owned = false;
+    try { renderRoot(); } catch (e) { /* ignore */ }
+    var request = hostRequest();
+    if (!request) { return; }
+    clearStatus();
+    try {
+      Promise.resolve(request.post('/api/v2/games/music-activity', {})).catch(function () { });
+    } catch (e) { /* ignore */ }
+  }
+
+  // 关窗/刷新时调用：只有“当前活动确实是我们设的”才收回，避免误清用户自己选的游戏
+  function releaseStatus() {
+    if (!statusState.owned) { return; }
+    var request = hostRequest();
+    if (!request) { return; }
+    statusState.owned = false;
+    try {
+      Promise.resolve(request.patch('/api/v2/games/activity/0', {})).catch(function () { });
+      Promise.resolve(request.post('/api/v2/games/music-activity', {})).catch(function () { });
+    } catch (e) { /* ignore */ }
+  }
+
+  function loadGames(force) {
+    if (CTRL.games && !force && (Date.now() - CTRL.gamesAt) < 60000) {
+      return Promise.resolve(CTRL.games);
+    }
+    var request = hostRequest();
+    if (!request) { return Promise.resolve([]); }
+    return Promise.resolve(request.get('/api/v2/games'))
+      .then(function (res) {
+        var list = dataOf(res).filter(function (g) { return g && g.name; });
+        list.sort(function (a, b) { return String(a.name).localeCompare(String(b.name), 'zh-Hans-CN'); });
+        CTRL.games = list;
+        CTRL.gamesAt = Date.now();
+        return list;
+      })
+      .catch(function () { return CTRL.games || []; });
+  }
+
+  // ---------------------------------------------------------------- 菜单 UI
+
+  var CSS = [
+    '#fko-debug-btn{position:fixed;left:1px;top:1px;z-index:2147483647;height:14px;line-height:13px;padding:0 5px;margin:0;',
+    'font:10px/13px "Microsoft YaHei",system-ui,sans-serif;color:#ff4d4d;background:rgba(10,10,10,.35);',
+    'border:1px solid rgba(255,59,59,.35);border-radius:2px;opacity:.45;cursor:pointer;white-space:nowrap;',
+    'overflow:hidden;user-select:none;-webkit-user-select:none;-webkit-app-region:no-drag;',
+    'transition:opacity .12s linear,background .12s linear,border-color .12s linear}',
+    '#fko-debug-btn.fko-on,#fko-debug-btn:hover{opacity:1;background:rgba(13,13,13,.96);border-color:#ff3b3b}',
+    '#fko-debug-btn .fko-caret{color:#ff8080;margin-left:3px;font-size:8px}',
+    '.fko-menu{position:fixed;left:1px;top:16px;z-index:2147483647;min-width:154px;padding:3px 0;',
+    'background:rgba(12,12,12,.98);border:1px solid rgba(255,59,59,.5);border-radius:3px;',
+    'box-shadow:0 8px 22px rgba(0,0,0,.7);font:11px/16px "Microsoft YaHei",system-ui,sans-serif;',
+    'color:#e6e6e6;-webkit-app-region:no-drag;display:none;max-height:70vh;overflow:auto}',
+    '.fko-menu.fko-show{display:bl)FKOJS",
+R"FKOJS(ock}',
+    '.fko-menu.fko-sub{left:auto;right:auto;top:16px;min-width:170px}',
+    '.fko-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:3px 9px;cursor:pointer;white-space:nowrap}',
+    '.fko-item:hover{background:rgba(255,59,59,.16);color:#fff}',
+    '.fko-item .fko-arrow{color:#ff4d4d;font-size:9px}',
+    '.fko-item.fko-muted{color:#8a8a8a;cursor:default}',
+    '.fko-item.fko-muted:hover{background:transparent;color:#8a8a8a}',
+    '.fko-sep{height:1px;margin:3px 0;background:rgba(255,59,59,.25)}',
+    '.fko-pad{padding:3px 9px}',
+    '.fko-label{color:#9a9a9a;font-size:10px;margin:3px 0 2px}',
+    '.fko-input{width:100%;box-sizing:border-box;background:#1a1a1a;border:1px solid rgba(255,59,59,.35);',
+    'border-radius:2px;color:#f2f2f2;font:11px/15px "Microsoft YaHei",system-ui,sans-serif;padding:2px 5px;outline:none}',
+    '.fko-input:focus{border-color:#ff3b3b}',
+    '.fko-select{width:100%;box-sizing:border-box;background:#1a1a1a;border:1px solid rgba(255,59,59,.35);',
+    'border-radius:2px;color:#f2f2f2;font:11px/15px "Microsoft YaHei",system-ui,sans-serif;padding:2px 4px;outline:none}',
+    '.fko-btn{display:block;width:100%;margin-top:5px;padding:3px 0;background:#1d1d1d;',
+    'border:1px solid rgba(255,59,59,.5);border-radius:2px;color:#ff6b6b;',
+    'font:11px/16px "Microsoft YaHei",system-ui,sans-serif;cursor:pointer}',
+    '.fko-btn:hover{background:rgba(255,59,59,.22);color:#fff}',
+    '.fko-list{max-height:200px;overflow:auto;margin-top:3px}',
+    '.fko-game{padding:2px 9px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.fko-game:hover{background:rgba(255,59,59,.16);color:#fff}',
+    '.fko-state{padding:2px 9px;color:#7fdc7f;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+  ].join('');
+
+  function ensureStyle() {
+    if (document.getElementById(STYLE_ID)) { return; }
+    if (!document.head) { return; }
+    var st = document.createElement('style');
+    st.id = STYLE_ID;
+    st.textContent = CSS;
+    document.head.appendChild(st);
+  }
+
+  function mk(tag, cls, text) {
+    var d = document.createElement(tag);
+    if (cls) { d.className = cls; }
+    if (text != null) { d.textContent = text; }
+    return d;
+  }
+
+  function item(label, arrow, onClick) {
+    var d = mk('div', 'fko-item' + (onClick ? '' : ' fko-muted'));
+    d.appendChild(mk('span', null, label));
+    if (arrow) { d.appendChild(mk('span', 'fko-arrow', arrow)); }
+    if (onClick) {
+      d.addEventListener('click', function (ev) {
         ev.preventDefault();
         ev.stopPropagation();
-      }
-      requestDevTools('button');
-    });
-
-    document.body.appendChild(btn);
+        onClick(ev);
+      });
+    }
+    return d;
   }
+
+  function sep() { return mk('div', 'fko-sep'); }
+
+  var UI = { root: null, sub: null, btn: null, section: '' };
+
+  function hideSub() {
+    if (UI.sub) { UI.sub.className = 'fko-menu fko-sub'; }
+    UI.section = '';
+  }
+
+  function closeAll() {
+    hideSub();
+    if (UI.root) { UI.root.className = 'fko-menu'; }
+    if (UI.btn) { UI.btn.className = ''; }
+    UI.open = false;
+  }
+
+  function openRoot() {
+    UI.open = true;
+    hideSub();
+    renderRoot();
+    if (UI.root) { UI.root.className = 'fko-menu fko-show'; }
+    if (UI.btn) { UI.btn.className = 'fko-on'; }
+  }
+
+  function statusLine() {
+    var bits = [];
+    if (CTRL.desiredName) { bits.push('玩：' + CTRL.desiredName); }
+    if (CTRL.desiredMusic && CTRL.desiredMusic.name) { bits.push('听：' + CTRL.desiredMusic.name); }
+    if (!bits.length) { return ''; }
+    return bits.join('  ');
+  }
+
+  function renderRoot() {
+    if (!UI.root) { return; }
+    var root = UI.root;
+    while (root.firstChild) { root.removeChild(root.firstChild); }
+
+    root.appendChild(item('进入调试模式', '', function () { requestDevTools('menu'); closeAll(); }));
+    root.appendChild(sep());
+    root.appendChild(item('伪造状态', '\u25B6', function () { showSection('fake'); }));
+    root.appendChild(sep());
+    var line = statusLine();
+    root.appendChild(mk('div', 'fko-state', line ? line : '当前没有伪造状态'));
+    root.appendChild(item('清除伪造状态', '', function () { stopAll(); renderRoot(); }));
+  }
+
+  function showSection(name) {
+    UI.section = name;
+    if (!UI.sub) { return; }
+    var sub = UI.sub;
+    while (sub.firstChild) { sub.removeChild(sub.firstChild); }
+
+    sub.appendChild(item('\u2190 返回', '', function () { hideSub(); }));
+
+    if (name === 'fake') {
+      sub.appendChild(sep());
+      sub.appendChild(item('自定义游戏文字\u2026', '', function () { showSection('text'); }));
+      sub.appendChild(item('选择收录的游戏', '\u25B6', function () { showSection('games'); }));
+      sub.appendChild(item('正在听歌\u2026', '\u25B6', function () { showSection('music'); }));
+      sub.appendChild(sep());
+      sub.appendChild(item('清除伪造状态', '', function () { stopAll(); closeAll(); }));
+    } else if (name === 'text') {
+      sub.appendChild(sep());
+      sub.appendChild(mk('div', 'fko-label', '显示在“正在玩”后面的文字'));
+      var input = mk('input', 'fko-input');
+      input.type = 'text';
+      input.placeholder = '例如：在打豆豆';
+      input.value = CTRL.desiredName || '';
+      input.maxLength = 60;
+      var wrap = mk('div', 'fko-pad');
+      wrap.appendChild(input);
+      var go = mk('button', 'fko-btn', '应用');
+      go.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        var v = String(input.value || '').trim();
+        if (!v) { return; }
+        applyStatus(v);
+        closeAll();
+      });
+      wrap.appendChild(go);
+      input.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') { go.click(); }
+      });
+      sub.appendChild(wrap);
+    } else if (name === 'games') {
+      sub.appendChild(sep());
+      var search = mk('input', 'fko-input');
+      search.type = 'text';
+      search.placeholder = '搜索游戏名…';
+      var sw = mk('div', 'fko-pad');
+      sw.appendChild(search);
+      sub.appendChild(sw);
+      var list = mk('div', 'fko-list');
+      list.appendChild(mk('div', 'fko-game fko-muted', '加载中…'));
+      sub.appendChild(list);
+
+      function renderList(all) {
+        while (list.firstChild) { list.removeChild(list.firstChild); }
+        var q = String(search.value || '').trim().toLowerCase();
+        var shown = 0;
+        for (var i = 0; i < all.length && shown < 200; i++) {
+          var g = all[i];
+          if (g.type !== 0 && g.type !== 1) { continue; }
+          var nm = String(g.name || '').trim();
+          if (q && nm.toLowerCase().indexOf(q) < 0) { continue; }
+          shown++;
+          (function (game, name) {
+            var row = mk('div', 'fko-game', name);
+            row.title = (game.process_name || []).join(', ');
+            row.addEventListener('click', function (ev) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              applyStatus(name);
+              closeAll();
+            });
+            list.appendChild(row);
+          })(g, nm);
+        }
+        if (!shown) { list.appendChild(mk('div', 'fko-game fko-muted', '没有匹配的游戏')); }
+      }
+
+      loadGames(false).then(function (all) {
+        renderList(all);
+        search.addEventListener('input', function () { renderList(all); });
+        setTimeout(function () { try { search.focus(); } catch (e) { /* ignore */ } }, 30);
+      });
+    } else if (name === 'music') {
+      sub.appendChild(sep());
+      sub.appendChild(mk('div', 'fko-label', '歌名'));
+      var n = mk('input', 'fko-input');
+      n.type = 'text';
+      n.placeholder = '例如：晴天';
+      n.maxLength = 80;
+      if (CTRL.desiredMusic) { n.value = CTRL.desiredMusic.name || ''; }
+      sub.appendChild(n);
+
+      sub.appendChild(mk('div', 'fko-label', '歌手（可留空）'));
+      var a = mk('input', 'fko-input');
+      a.type = 'text';
+      a.placeholder = '例如：周杰伦';
+      a.maxLength = 80;
+      if (CTRL.desiredMusic) { a.value = CTRL.desiredMusic.singer || ''; }
+      sub.appendChild(a);
+
+      sub.appendChild(mk('div', 'fko-label', '音乐软件（只影响小图标/来源）'));
+      var sel = mk('select', 'fko-select');
+      var apps = [
+        ['qqmusic', 'QQ音乐'], ['cloudmusic', '网易云音乐'], ['kugou', '酷狗音乐'],
+        ['kwmusic', '酷我音乐'], ['spotify', 'Spotify'], ['applemusic', 'Apple Music']
+      ];
+      for (var i = 0; i < apps.length; i++) {
+        var op = mk('option', null, apps[i][1]);
+        op.value = apps[i][0];
+        if (CTRL.desiredMusic && CTRL.desiredMusic.software === apps[i][0]) { op.selected = true; }
+        else if (!CTRL.desiredMusic && CTRL.musicSoftware === apps[i][0]) { op.selected = true; }
+        sel.appendChild(op);
+      }
+      sub.appendChild(sel);
+
+      var mb = mk('button', 'fko-btn', '开始听歌');
+      mb.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        var nm = String(n.value || '').trim();
+        if (!nm) { return; }
+        CTRL.musicSoftware = sel.value || 'qqmusic';
+        applyMusic(nm, String(a.value || '').trim(), CTRL.musicSoftware);
+        closeAll();
+      });
+      sub.appendChild(mb);
+
+      var sb = mk('button', 'fko-btn', '停止听歌');
+      sb.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        applyMusic('');
+        closeAll();
+      });
+      sub.appendChild(sb);
+    }
+
+    sub.className = 'fko-menu fko-sub fko-show';
+    var rect = null;
+    try { rect = UI.btn ? UI.btn.getBoundingClientRect() : null; } catch (e) { rect = null; }
+    var w = UI.root ? UI.root.offsetWidth : 0;
+    sub.style.left = (1 + (w || 154) + 2) + 'px';
+    sub.style.top = '16px';
+    if (rect && rect.width) { /* noop, kept for future positioning */ }
+  }
+
+  function installUi() {
+    if (!document.body) { return; }
+    ensureStyle();
+
+    if (!UI.btn || !document.body.contains(UI.btn)) {
+      var btn = mk('div', '', '菜单');
+      btn.id = BTN_ID;
+      btn.title = 'KookClean 菜单：调试模式 / 伪造状态';
+      btn.appendChild(mk('span', 'fko-caret', '\u25BC'));
+      btn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (UI.open) { closeAll(); } else { openRoot(); }
+      });
+      btn.addEventListener('mouseenter', function () { btn.classList.add('fko-on'); });
+      btn.addEventListener('mouseleave', function () {
+        if (!UI.open) { btn.classList.remove('fko-on'); }
+      });
+      UI.btn = btn;
+      document.body.appendChild(btn);
+    }
+
+    if (!UI.root || !document.body.contains(UI.root)) {
+      var root = mk('div', 'fko-menu');
+      root.addEventListener('click', function (ev) { ev.stopPropagation(); });
+      UI.root = root;
+      document.body.appendChild(root);
+      UI.open = false;   // 文档重建后按钮和面板都要重新打开，避免状态错位
+      renderRoot();
+    }
+
+    if (!UI.sub || !document.body.contains(UI.sub)) {
+      var sub = mk('div', 'fko-menu fko-sub');
+      sub.addEventListener('click', function (ev) { ev.stopPropagation(); });
+      UI.sub = sub;
+      document.body.appendChild(sub);
+    }
+  }
+
+  try {
+    document.addEventListener('click', function (ev) {
+      // 点菜单/按钮自身时不要关闭（捕获阶段会先于菜单项的 click 处理器执行）
+      var target = ev && ev.target;
+      try {
+        if (target && target.closest &&
+            (target.closest('.fko-menu') || target.closest('#' + BTN_ID))) {
+          return;
+        }
+      } catch (e) { /* ignore */ }
+      closeAll();
+    }, true);
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') { closeAll(); }
+    }, true);
+  } catch (e) { /* ignore */ }
 
   function tick() {
     scheduling = false;
     try { scan(); } catch (e) { /* ignore */ }
-    try { installButton(); } catch (e) { /* ignore */ }
+    try { installUi(); } catch (e) { /* ignore */ }
   }
 
-  function schedule() {
+  func)FKOJS",
+R"FKOJS(tion schedule() {
     if (scheduling) { return; }
     scheduling = true;
     if (window.requestAnimationFrame) {
@@ -158,12 +627,77 @@ static const char kPayloadTemplate[] = R"FKOJS(/*
   window.addEventListener('hashchange', schedule);
   setInterval(tick, 2000);
 
-  // 方便在 DevTools 里手动排查
+  // ---------------------------------------------------------------- 启动 & 退出
+
+  // 启动时**不设置**任何状态；只是把上一次会话可能留下的伪造状态清掉一次
+  // （直接被强杀/断电时 pagehide 收不回来，服务端还会留着我们设的活动）。
+  function bootStatus(tries) {
+    if (window.top !== window) { return; }
+    if (!hostRequest()) {
+      if (tries < 240) { setTimeout(function () { bootStatus(tries + 1); }, 500); }
+      return;
+    }
+    // 每次启动只清一次（sessionStorage 随窗口关闭而消失，刷新/切页不会重复清）
+    var booted = true;
+    try { booted = sessionStorage.getItem('__fko_boot') === '1'; } catch (e) { booted = false; }
+    if (!booted) {
+      try { sessionStorage.setItem('__fko_boot', '1'); } catch (e) { /* ignore */ }
+      // 清掉上一次会话可能残留的活动（被强杀时收不回来的那种）
+      try {
+        clearStatus().then(function () { statusState.bootClear = 'sent'; },
+          function () { statusState.bootClear = 'fail'; });
+      } catch (e) { /* ignore */ }
+      try {
+        Promise.resolve(hostRequest().post('/api/v2/games/music-activity', {})).catch(function () { });
+      } catch (e) { /* ignore */ }
+    }
+    // 只在“已经设了东西”的会话里重申，重启后 CTRL 是空的，所以这里不会发出任何请求
+    setInterval(function () {
+      if (CTRL.desiredName) { applyStatus(); }
+      // 听歌状态不要频繁重发（服务端对 music-activity 的调用比较敏感），
+      // 只有在超过 3 分钟没发过、且确实设了歌时才补一次
+      if (CTRL.desiredMusic && (Date.now() - CTRL.musicAt) > 180000) { applyMusic(); }
+    }, STATUS_INTERVAL);
+    window.addEventListener('focus', function () {
+      if (!CTRL.desiredName && !CTRL.desiredMusic) { return; }
+      if (Date.now() - statusState.lastApply > 10000) {
+        if (CTRL.desiredName) { applyStatus(); }
+      }
+    }, true);
+    // 关窗/刷新时尽力把状态收回，保证下次启动是干净的
+    window.addEventListener('pagehide', releaseStatus, true);
+    window.addEventListener('beforeunload', releaseStatus, true);
+  }
+
+  bootStatus(0);
+
   window.__FKO__ = {
     scan: scan,
     rules: RULES,
     hide: hideElement,
-    devtools: requestDevTools
+    devtools: requestDevTools,
+    menu: { open: openRoot, close: closeAll, section: showSection },
+    status: {
+      name: '',                     // 兼容旧字段：启动时永远是空的
+      proc: STATUS_PROC,
+      state: statusState,
+      ctrl: CTRL,
+      apply: applyStatus,
+      music: applyMusic,
+      release: releaseStatus,
+      clear: clearStatus,
+      stop: stopAll,
+      games: loadGames
+    }
   };
 })();
-)FKOJS";
+)FKOJS",
+};
+
+static const unsigned int kPayloadChunkCount = 3;
+
+inline std::string FkoPayloadTemplate() {
+    std::string out;
+    for (unsigned int i = 0; i < kPayloadChunkCount; ++i) { out += kPayloadChunks[i]; }
+    return out;
+}

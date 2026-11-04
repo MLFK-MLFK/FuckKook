@@ -124,11 +124,14 @@ struct Rule {
 
 std::vector<Rule> LoadRules() {
     std::vector<Rule> rules;
-    // 内置默认：对应 E:\KOOK\DLL\广告1.txt（远程下发的广告轮播）。
-    // 广告2.txt（发现页“开黑活动/开黑服务器”模块）已按要求恢复显示，不再内置。
+    // 内置默认：
+    //   广告1.txt -> 远程下发的广告轮播（.mixed-ad-carousel-wrapper / .kook-ad-image）
+    //   广告2.txt -> 语音中心左下角的推广卡（.audio-center-promotion）
+    // 注：发现页“开黑活动/开黑服务器”模块（旧版广告2）已按要求恢复显示，不再内置。
     rules.push_back({".mixed-ad-carousel-wrapper", 0});
     rules.push_back({".kook-ad-image", 0});
     rules.push_back({".swiper-slide-duplicate .kook-ad-image", 0});
+    rules.push_back({".audio-center-promotion", 0});
 
     const std::wstring configPath = GetOwnModuleDir() + L"\\kook-adblock.txt";
     std::string text;
@@ -211,13 +214,15 @@ std::string RulesToJson(const std::vector<Rule>& rules) {
     return json;
 }
 
+// 注意：伪造状态是“临时”的，DLL 不再从 kook-status.txt 读取启动状态，
+// 页面脚本启动时什么都不做，只有用户在菜单里点了才设置，关窗时自动收回。
 std::string BuildPayload() {
-    std::string payload = kPayloadTemplate;
-    const std::string placeholder = "__FKO_RULES__";
-    // 用 rfind：注释里也提到了这个占位符，只有最后（代码里）那一处是要替换的
-    const size_t pos = payload.rfind(placeholder);
-    if (pos != std::string::npos) {
-        payload.replace(pos, placeholder.size(), RulesToJson(LoadRules()));
+    std::string payload = FkoPayloadTemplate();
+    // 用 rfind：注释里也提到了占位符，只有最后（代码里）那一处是要替换的
+    const std::string rulesPlaceholder = "__FKO_RULES__";
+    const size_t rulesPos = payload.rfind(rulesPlaceholder);
+    if (rulesPos != std::string::npos) {
+        payload.replace(rulesPos, rulesPlaceholder.size(), RulesToJson(LoadRules()));
     }
     return payload;
 }
