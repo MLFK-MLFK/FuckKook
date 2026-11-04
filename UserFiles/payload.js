@@ -96,6 +96,7 @@
 
   var CTRL = {
     desiredName: '',                  // 期望显示的游戏动态名（空 = 不伪造）
+    desiredGameId: 0,                 // >0 表示用“官方收录游戏”的 id 上报（有官方图标）
     desiredMusic: null,               // {name, singer, software}
     musicSoftware: 'qqmusic',
     games: null,
@@ -141,7 +142,10 @@
 
   // 把“正在玩”设成 name；不带参数时用当前期望值（定时重申走这条路）
   function applyStatus(name) {
-    if (typeof name === 'string' && name) { CTRL.desiredName = name; }
+    if (typeof name === 'string' && name) {
+      CTRL.desiredName = name;
+      CTRL.desiredGameId = 0;         // 自定义文字走“我们那条 kookplay 条目”
+    }
     var target = CTRL.desiredName;
     if (!target) { return Promise.resolve(false); }
     if (window.top !== window) { return Promise.resolve(false); }  // 只在顶层文档里做
@@ -190,6 +194,41 @@
       .then(function () { statusState.busy = false; return true; });
   }
 
+  // 用 KOOK 官方收录的游戏（type=0）直接上报活动。
+  // 官方条目在服务端带 icon，换成官方 id 后“正在玩”就跟着官方条目走（图标/名称都来自官方库）；
+  // 我们那条自定义 kookplay 条目的 icon 永远是空的，所以自定义文字永远不会有图标。
+  function applyOfficial(game) {
+    if (game && typeof game === 'object') {
+      CTRL.desiredGameId = Number(game.id) || 0;
+      CTRL.desiredName = String(game.name || '');
+    } else if (game) {
+      CTRL.desiredGameId = Number(game) || 0;
+    }
+    var id = CTRL.desiredGameId;
+    if (!id || !CTRL.desiredName) { return Promise.resolve(false); }
+    if (window.top !== window) { return Promise.resolve(false); }
+    var request = hostRequest();
+    if (!request) { return Promise.resolve(false); }
+    if (statusState.busy) { return Promise.resolve(false); }
+    statusState.busy = true;
+    return Promise.resolve(request.patch('/api/v2/games/activity/' + id, {}))
+      .then(function () {
+        statusState.id = id;
+        statusState.lastApply = Date.now();
+        statusState.lastName = CTRL.desiredName;
+        statusState.owned = true;
+        try { renderRoot(); } catch (e) { /* ignore */ }
+      })
+      .catch(function (e) { statusState.lastError = String(e && (e.message || e)); })
+      .then(function () { statusState.busy = false; return true; });
+  }
+
+  // 定时重申：官方 id 和自定义文字走不同通道
+  function reassert() {
+    if (!CTRL.desiredName) { return; }
+    if (CTRL.desiredGameId) { applyOfficial(); } else { applyStatus(); }
+  }
+
   // 把“正在听”设成 name/singer；不带参数时用当前期望值
   function applyMusic(name, singer, software) {
     if (typeof name === 'string') {
@@ -227,6 +266,7 @@
 
   function stopAll() {
     CTRL.desiredName = '';
+    CTRL.desiredGameId = 0;
     CTRL.desiredMusic = null;
     statusState.lastName = '';
     statusState.owned = false;
@@ -450,7 +490,11 @@
             row.addEventListener('click', function (ev) {
               ev.preventDefault();
               ev.stopPropagation();
-              applyStatus(name);
+              if (game.type === 0) {
+                applyOfficial(game);      // 官方收录：直接上报官方 id（带官方图标）
+              } else {
+                applyStatus(name);        // 自建条目：沿用我们那条 kookplay 条目
+              }
               closeAll();
             });
             list.appendChild(row);
@@ -644,7 +688,7 @@
     }
     // 只在“已经设了东西”的会话里重申，重启后 CTRL 是空的，所以这里不会发出任何请求
     setInterval(function () {
-      if (CTRL.desiredName) { applyStatus(); }
+      if (CTRL.desiredName) { reassert(); }
       // 听歌状态不要频繁重发（服务端对 music-activity 的调用比较敏感），
       // 只有在超过 3 分钟没发过、且确实设了歌时才补一次
       if (CTRL.desiredMusic && (Date.now() - CTRL.musicAt) > 180000) { applyMusic(); }
@@ -652,7 +696,7 @@
     window.addEventListener('focus', function () {
       if (!CTRL.desiredName && !CTRL.desiredMusic) { return; }
       if (Date.now() - statusState.lastApply > 10000) {
-        if (CTRL.desiredName) { applyStatus(); }
+        if (CTRL.desiredName) { reassert(); }
       }
     }, true);
     // 关窗/刷新时尽力把状态收回，保证下次启动是干净的
@@ -674,6 +718,7 @@
       state: statusState,
       ctrl: CTRL,
       apply: applyStatus,
+      official: applyOfficial,
       music: applyMusic,
       release: releaseStatus,
       clear: clearStatus,
